@@ -1,7 +1,7 @@
 /**
  * \file
  *
- * \brief Empty user application template
+ * \brief The main loop and associated routines to run the DC gate opener.
  *
  */
 
@@ -69,7 +69,7 @@ static const gpio_map_t ADC_GPIO_MAP =
 #define MC_BATTERY_MINIMUM_VOLTAGE                  (11.6)  // volts - see http://www.kendrickastro.com/lvc.html
 
 #define GET_ADC_CURRENT_CHANNEL_FOR_MOTOR(m)        (((m) == MOTOR_1) ? MC_ADC_CHANNEL_CH1_CURRENT : MC_ADC_CHANNEL_CH2_CURRENT)
-#define MC_MAX_OVERCURRENT_THRESHOLD_AMPS           (4.0)               // For each motor
+#define MC_MAX_OVERCURRENT_THRESHOLD_AMPS           (6.0)               // For each motor
 
 #define SECONDS_TO_MS(secs)     (1000*(secs))
 #define MS_TO_SECONDS(ms)       (((float)(ms))/1000)
@@ -318,7 +318,7 @@ static uint32_t downcounter_close_on_timer_ms = 0;
 #define IS_ANY_MOTOR_REVERSE()      ((MOTOR_STATE_REVERSE == motors[MOTOR_1].state) || (MOTOR_STATE_REVERSE == motors[MOTOR_2].state))
 
 #define MC_MOTOR_MIN_CURRENT_AMPS   (0.1)
-#define MC_MOTOR_MAX_CURRENT_AMPS   (4.0)
+#define MC_MOTOR_MAX_CURRENT_AMPS   (6.0)
 
 #define RESPONSE_CHAR               '='
 
@@ -586,7 +586,7 @@ static uint16_t SPI_ExchangeWithMotorDriver(motor_number_t mi)
     // The DR bit ensures that errors are latched until we turn the driver off.
     // The CL[2:1] bits are set to [10] which corresponds to the current limit
     // of 6.6A - which is the default value for this driver.
-    static const uint16_t txsw = L9958_CFG_DR | L9958_CFG_CL_2;
+    static const uint16_t txsw = L9958_CFG_DR /*| L9958_CFG_CL_1 */| L9958_CFG_CL_2;
     uint16_t rxsw = 0xFFFF; // All error bits are set in case SPI fails.
 
     switch (mi) {
@@ -795,18 +795,18 @@ static void SetMotor(motor_number_t mi, motor_state_t state, uint32_t start_dela
         SetPin(PIN_CH1_PWM, pwm);
         SetPin(PIN_CH1_ENA, pwm);
         if (dir) {
-            motors[mi].overload_current = (uint32_t)(SECONDS_TO_MS(eeprom_shadow.cur_m1_open_max));
+            motors[mi].overload_current = eeprom_shadow.cur_m1_open_max;
         } else {
-            motors[mi].overload_current = (uint32_t)(SECONDS_TO_MS(eeprom_shadow.cur_m1_close_max));
+            motors[mi].overload_current = eeprom_shadow.cur_m1_close_max;
         }
     } else if (mi == MOTOR_2) {
         SetPin(PIN_CH2_DIR, dir);
         SetPin(PIN_CH2_PWM, pwm);
         SetPin(PIN_CH2_ENA, pwm);
         if (dir) {
-            motors[mi].overload_current = (uint32_t)(SECONDS_TO_MS(eeprom_shadow.cur_m2_open_max));
+            motors[mi].overload_current = eeprom_shadow.cur_m2_open_max;
         } else {
-            motors[mi].overload_current = (uint32_t)(SECONDS_TO_MS(eeprom_shadow.cur_m2_close_max));
+            motors[mi].overload_current = eeprom_shadow.cur_m2_close_max;
         }
     } else {
         return;
@@ -1966,10 +1966,11 @@ static void ProcessMotorState(motor_number_t mi, int channel)
         }
 
         //
-        // Check error bits in the SPI diagnostic word. They should be all zero except ACT.
+        // Check error bits in the SPI diagnostic word. They should be all zero except ACT
+        // and perhaps ILIM (that one pulses as it regulates the motor's average current.)
         // If that is not so, we stop BOTH motors.
         //
-        if ((mp->driver_diag & ~L9958_ACT_MASK) != 0) {
+        if ((mp->driver_diag & ~(L9958_ACT_MASK | L9958_ILIM_MASK)) != 0) {
             ExecuteEmergencyStop(MC_STOP_REASON_DRIVER_ERROR, true, channel);
             PrintMotorControllerDiagnostic(mi, channel);
         }
@@ -1992,14 +1993,15 @@ static void ProcessMotorState(motor_number_t mi, int channel)
         // allows the motor to start and begin moving the gate.
         //
         if (elapsed_time_ms >= eeprom_shadow.overcurrent_guard_time_ms) {
-            if (mp->current >= MC_MAX_OVERCURRENT_THRESHOLD_AMPS) {
+            if (mp->current >= mp->overload_current) {
                 // Note: this is the normal way to end the cycle.
                 if (current_measurement_flag) {
                     char msg[80];
                     sprintf(msg, "=m%d: OVERCURRENT=", mi);
                     queue_string(msg, channel);
                     if (mp->current != MC_SIMULATED_OVERCURRENT_AMPS) {
-                        sprintf(msg, "%.2fA (ADC=%.2fV)", mp->current, adc_readings_volts[GET_ADC_CURRENT_CHANNEL_FOR_MOTOR(mi)]);
+                        sprintf(msg, "%.2fA (ADC=%.2fV, OVC=%.2fA)",
+							mp->current, adc_readings_volts[GET_ADC_CURRENT_CHANNEL_FOR_MOTOR(mi)], mp->overload_current);
                         queue_string(msg, channel);
                     } else {
                         queue_string("SIMULATED", channel);
