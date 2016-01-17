@@ -1,3 +1,7 @@
+# Output locations
+GateMotorController/Debug
+GateMotorController/Release
+
 # Object files
 *.o
 *.ko
@@ -30,3 +34,6 @@
 
 # Debug files
 *.dSYM/
+
+# Atmel Studio user options
+*.atsuo
